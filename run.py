@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from Crypto.Cipher import AES
 
 DEFAULT_PORT = 1080
+CONFIG_FILE = "config.txt"
 log = logging.getLogger('cwoboda-tg')
 
 _TCP_NODELAY = True
@@ -23,20 +24,17 @@ _WS_POOL_SIZE = 4
 _WS_POOL_MAX_AGE = 120.0
 
 _TG_RANGES = [
-    # 185.76.151.0/24
     (struct.unpack('!I', _socket.inet_aton('185.76.151.0'))[0],
      struct.unpack('!I', _socket.inet_aton('185.76.151.255'))[0]),
-    # 149.154.160.0/20
+    (struct.unpack('!I', _socket.inet_aton('149.154.167.0'))[0],
+     struct.unpack('!I', _socket.inet_aton('149.154.175.255'))[0]),
     (struct.unpack('!I', _socket.inet_aton('149.154.160.0'))[0],
      struct.unpack('!I', _socket.inet_aton('149.154.175.255'))[0]),
-    # 91.105.192.0/23
     (struct.unpack('!I', _socket.inet_aton('91.105.192.0'))[0],
      struct.unpack('!I', _socket.inet_aton('91.105.193.255'))[0]),
-    # 91.108.0.0/16
     (struct.unpack('!I', _socket.inet_aton('91.108.0.0'))[0],
      struct.unpack('!I', _socket.inet_aton('91.108.255.255'))[0]),
 ]
-
 
 _IP_TO_DC: Dict[str, Tuple[int, bool]] = {
     '149.154.175.50': (1, False), '149.154.175.51': (1, False),
@@ -110,7 +108,6 @@ def _xor_mask(data: bytes, mask: bytes) -> bytes:
 
 
 class RawWebSocket:
-
     OP_CONTINUATION = 0x0
     OP_TEXT = 0x1
     OP_BINARY = 0x2
@@ -236,7 +233,6 @@ class RawWebSocket:
 
             if opcode in (self.OP_TEXT, self.OP_BINARY):
                 return payload
-
 
             continue
 
@@ -408,7 +404,6 @@ class _MsgSplitter:
 
 
 def _ws_domains(dc: int, is_media) -> List[str]:
-
     base = 'telegram.org' if dc > 5 else 'web.telegram.org'
     if is_media is None or is_media:
         return [f'kws{dc}-1.{base}', f'kws{dc}.{base}']
@@ -540,7 +535,6 @@ _ws_pool = _WsPool()
 async def _bridge_ws(reader, writer, ws: RawWebSocket, label,
                      dc=None, dst=None, port=None, is_media=False,
                      splitter: _MsgSplitter = None):
-
     dc_tag = f"DC{dc}{'m' if is_media else ''}" if dc else "DC?"
     dst_tag = f"{dst}:{port}" if dst else "?"
 
@@ -625,7 +619,6 @@ async def _bridge_ws(reader, writer, ws: RawWebSocket, label,
 async def _bridge_tcp(reader, writer, remote_reader, remote_writer,
                       label, dc=None, dst=None, port=None,
                       is_media=False):
-
     async def forward(src, dst_w, tag):
         try:
             while True:
@@ -666,7 +659,6 @@ async def _bridge_tcp(reader, writer, remote_reader, remote_writer,
 
 
 async def _pipe(r, w):
-
     try:
         while True:
             data = await r.read(65536)
@@ -692,7 +684,6 @@ def _socks5_reply(status):
 
 async def _tcp_fallback(reader, writer, dst, port, init, label,
                         dc=None, is_media=False):
-
     try:
         rr, rw = await asyncio.wait_for(
             asyncio.open_connection(dst, port), timeout=10)
@@ -727,7 +718,6 @@ async def _handle_client(reader, writer):
         await reader.readexactly(nmethods)
         writer.write(b'\x05\x00')
         await writer.drain()
-
 
         req = await asyncio.wait_for(reader.readexactly(4), timeout=10)
         _ver, cmd, _rsv, atyp = req
@@ -975,21 +965,18 @@ async def _run(port: int, dc_opt: Dict[int, Optional[str]],
             sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
         except (OSError, AttributeError):
             pass
-    log.info("  ==================================")
-    log.info("  Telegram: https://t.me/cwoboda_tg")
-    log.info("  GitHub: https://github.com/th1mimik/cwoboda-tg")
-    log.info("  ==================================")
-    log.info("  cwoboda-tg -> proxy %s:%d ", host, port)
-    log.info("  Listening on   %s:%d", host, port)
+
+    log.info("  cwoboda-tg & tg-ws-proxy")
+    log.info("  Подключитесь к %s:%d", host, port)
+    log.info("  Сервер: %s", host)
+    log.info("  Порт: %d", port)
     log.info("  Target DC IPs:")
     for dc in dc_opt.keys():
         ip = dc_opt.get(dc)
         log.info("    DC%d: %s", dc, ip)
 
-    log.info("  Configure Telegram:")
-    log.info("    SOCKS5 proxy -> %s:%d  (no user/pass)", host, port)
-
-
+    log.info("  Настройка конфигурации подключения:")
+    log.info("    SOCKS5 proxy -> %s:%d", host, port)
 
     async def log_stats():
         while True:
@@ -1046,35 +1033,87 @@ def run_proxy(port: int, dc_opt: Dict[int, str],
     asyncio.run(_run(port, dc_opt, stop_event, host))
 
 
-def main():
-    ap = argparse.ArgumentParser(
-        description='Telegram Desktop WebSocket Bridge Proxy')
-    ap.add_argument('--port', type=int, default=DEFAULT_PORT,
-                    help=f'Listen port (default {DEFAULT_PORT})')
-    ap.add_argument('--host', type=str, default='127.0.0.1',
-                    help='Listen host (default 127.0.0.1)')
-    ap.add_argument('--dc-ip', metavar='DC:IP', action='append',
-                    default=['2:149.154.167.220', '4:149.154.167.220'],
-                    help='Target IP for a DC, e.g. --dc-ip 1:149.154.175.205'
-                         ' --dc-ip 2:149.154.167.220')
-    ap.add_argument('-v', '--verbose', action='store_true',
-                    help='Debug logging')
-    args = ap.parse_args()
+def save_config(port: int, ip: str):
+    with open(CONFIG_FILE, 'w') as f:
+        f.write(f"port={port}\n")
+        f.write(f"ip={ip}\n")
+
+
+def load_config():
+    config_port = DEFAULT_PORT
+    config_ip = '127.0.0.1'
 
     try:
-        dc_opt = parse_dc_ip_list(args.dc_ip)
-    except ValueError as e:
-        log.error(str(e))
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'r') as f:
+                for line in f:
+                    if line.startswith('port='):
+                        config_port = int(line.strip().split('=')[1])
+                    elif line.startswith('ip='):
+                        config_ip = line.strip().split('=')[1]
+            log.info(f"Загружена конфигурация: порт {config_port}, IP {config_ip}")
+    except Exception as e:
+        log.error(f"Ошибка загрузки конфигурации: {e}")
+
+    return config_port, config_ip
+
+
+def main():
+    import sys
+
+    args = sys.argv[1:]
+
+    port = DEFAULT_PORT
+    ip = '127.0.0.1'
+    save = False
+
+    i = 0
+    while i < len(args):
+        if args[i] == '-port' and i + 1 < len(args):
+            try:
+                port = int(args[i + 1])
+                i += 2
+            except ValueError:
+                log.error("Порт должен быть числом")
+                sys.exit(1)
+        elif args[i] == '-ip' and i + 1 < len(args):
+            ip = args[i + 1]
+            i += 2
+        elif args[i] == '-save':
+            save = True
+            i += 1
+        else:
+            i += 1
+
+    if save and (port != DEFAULT_PORT or ip != '127.0.0.1'):
+        save_config(port, ip)
+        log.info(f"Конфигурация сохранена: порт {port}, IP {ip}")
+
+    if not any(arg in ['-port', '-ip'] for arg in args):
+        config_port, config_ip = load_config()
+        port = config_port
+        ip = config_ip
+        log.info(f"Используется сохраненная конфигурация: порт {port}, IP {ip}")
+
+    try:
+        _socket.inet_aton(ip)
+    except OSError:
+        log.error(f"Неверный IP адрес: {ip}")
         sys.exit(1)
 
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=logging.DEBUG,
         format='%(asctime)s  %(levelname)-5s  %(message)s',
         datefmt='%H:%M:%S',
     )
 
+    dc_opt = {
+        2: '149.154.167.220',
+        4: '149.154.167.220',
+    }
+
     try:
-        asyncio.run(_run(args.port, dc_opt, host=args.host))
+        asyncio.run(_run(port, dc_opt, host=ip))
     except KeyboardInterrupt:
         log.info("Shutting down. Final stats: %s", _stats.summary())
 
